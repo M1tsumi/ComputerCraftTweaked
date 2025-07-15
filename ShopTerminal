@@ -1,42 +1,47 @@
---[[
-  LongiMart UFO Emporium - SciFi Shopping Experience for CC:Tweaked
-  With tags and filter button
-  + Encrypted Disk Wallet + Buy Button
-  + Purchase logging to disk
-  Compatible with Wallet Disk Manager (2x2 Monitor Version)
-  Now with UFOs and cute cosmic decals!
-  + Prints a receipt to a connected printer after purchase!
---]]
+-- LongiMart Banking Terminal with Pack Store (Pro UI Version)
 
--- === Monitor, Disk & Printer Setup ===
 local monitor = peripheral.find("monitor")
 local drive = peripheral.find("drive")
-local printer = peripheral.find("printer")
-if not monitor then error("No monitor attached!") end
-if not drive then error("No disk drive found!") end
-if not printer then
-  print("Warning: No printer attached! Receipts will not be printed.")
-end
-monitor.setTextScale(0.5)
-monitor.setBackgroundColor(colors.black)
-monitor.clear()
+if not monitor or not drive then error("Monitor or Drive not found!") end
 
--- === Encryption for Wallet ===
-local ENCRYPTION_KEY = 97
+monitor.setTextScale(0.5)
+local key = 97
+
+-- Packs available
+local packs = {
+  {
+    name = "AE2 Pack",
+    items = {"Controller", "Drive", "Cables"},
+    price = math.random(300, 1230),
+  },
+  {
+    name = "Mekanism Generator Pack",
+    items = {"Heat Generator", "Gas-Burning Generator", "Cables"},
+    price = math.random(300, 1230),
+  },
+  {
+    name = "Refined Storage Pack",
+    items = {"Controller", "Grid", "Disk Drive"},
+    price = math.random(300, 1230),
+  },
+  {
+    name = "Mob Grinding Utils Pack",
+    items = {"Mob Crusher", "Fan", "Absorption Hopper"},
+    price = math.random(300, 1230),
+  },
+}
+
 local function xor(str)
   local out = {}
   for i = 1, #str do
-    table.insert(out, string.char(bit.bxor(str:byte(i), ENCRYPTION_KEY)))
+    table.insert(out, string.char(bit.bxor(str:byte(i), key)))
   end
   return table.concat(out)
 end
 
--- Reads wallet balance and ID from disk (compatible with Wallet Disk Manager)
 local function readWallet()
-  if not drive.isDiskPresent() then return nil, "No disk found." end
-  if not fs.exists("disk/wallet.dat") then
-    return {balance = 0, id = 0}
-  end
+  if not drive.isDiskPresent() then return nil end
+  if not fs.exists("disk/wallet.dat") then return {balance=0, id=0} end
   local f = fs.open("disk/wallet.dat", "r")
   local data = xor(f.readAll())
   f.close()
@@ -44,558 +49,121 @@ local function readWallet()
   for value in string.gmatch(data, "[^|]+") do
     table.insert(parts, value)
   end
-  local balance = tonumber(parts[1]) or 0
-  local id = tonumber(parts[2]) or 0
-  return {balance = balance, id = id}
+  return {balance=tonumber(parts[1]), id=tonumber(parts[2])}
 end
 
--- Writes wallet balance and ID to disk (compatible with Wallet Disk Manager)
 local function writeWallet(balance, id)
   local f = fs.open("disk/wallet.dat", "w")
-  local raw = tostring(balance) .. "|" .. tostring(id)
-  f.write(xor(raw))
+  f.write(xor(tostring(balance) .. "|" .. tostring(id)))
   f.close()
 end
 
--- Log a purchase to disk (plain text, not encrypted)
-local function logPurchase(packName, packPrice)
-  if not drive.isDiskPresent() then return end
-  local logPath = "disk/purchase.log"
-  local f = fs.open(logPath, "a")
-  if f then
-    local time = os.date and os.date("%Y-%m-%d %H:%M:%S") or tostring(os.clock())
-    f.writeLine(string.format("[%s] %s (%d BB)", time, packName, packPrice))
-    f.close()
-  end
-end
-
--- Print a receipt to the printer using data from disk
-local function printReceipt(pack, walletBefore, walletAfter)
-  if not printer then return end
-  if not drive.isDiskPresent() then return end
-
-  if not printer.newPage() then
-    -- Out of paper or ink
-    return
-  end
-
-  local function writeLine(text)
-    printer.write(text)
-    if printer.newLine then
-      printer.newLine()
-    else
-      -- Fallback: move to next line by writing a newline if newLine() is missing
-      printer.write("\n")
-    end
-  end
-
-  -- Pack Name
-  writeLine("Pack: " .. (pack.name or "?"))
-  writeLine("")
-  -- Time of Purchase
-  local time = os.date and os.date("%Y-%m-%d %H:%M:%S") or tostring(os.clock())
-  writeLine("Time: " .. time)
-  writeLine("")
-  -- Items in the Pack
-  writeLine("Items:")
-  for _, item in ipairs(pack.items or {}) do
-    writeLine("  - " .. item)
-  end
-  printer.endPage()
-end
-
--- === Shop Packs Data ===
-local packs = {
-  {
-    name = "AE2 Pack",
-    color = colors.cyan,
-    price = 2400,
-    description = "Automate item storage and crafting.",
-    tags = {"utility"},
-    items = {
-      "ME Controller", "ME Drive", "64k Storage Cell",
-      "ME Terminal", "ME Glass Cable", "Inscriber"
-    }
-  },
-  {
-    name = "Mekanism Gen Pack",
-    color = colors.lightBlue,
-    price = 1850,
-    description = "Generate and store power with early-mid tech.",
-    tags = {"utility"},
-    items = {
-      "Heat Generator", "Gas-Burning Generator", "Solar Generator",
-      "Basic Energy Cube", "Pressurized Tube", "Electrolytic Separator"
-    }
-  },
-  {
-    name = "Refined Storage Pack",
-    color = colors.orange,
-    price = 2100,
-    description = "Digital storage for every item in your world.",
-    tags = {"utility"},
-    items = {
-      "Controller", "Disk Drive", "16k Storage Disk",
-      "Grid", "Importer", "Exporter"
-    }
-  },
-  {
-    name = "Mob Grinding Utils Pack",
-    color = colors.purple,
-    price = 1700,
-    description = "Collect mob drops and automate XP systems.",
-    tags = {"utility"},
-    items = {
-      "Mob Crusher", "Mob Fan", "XP Tap",
-      "Absorption Hopper", "Mob Swab", "Wither Boss Filter"
-    }
-  },
-  {
-    name = "Just Dire Things Pack",
-    color = colors.brown,
-    price = 1600,
-    description = "Direwolf20's favorite utilities and gadgets.",
-    tags = {"utility"},
-    items = {
-      "Building Gadget", "Exchanger", "Dire Crafting Table",
-      "Time in a Bottle", "Personal Shrinking Device", "Mob Duplicator"
-    }
-  },
-  {
-    name = "Ars Nouveau Pack",
-    color = colors.blue,
-    price = 2000,
-    description = "Magical tools and spellcasting essentials.",
-    tags = {"magic"},
-    items = {
-      "Spell Book", "Source Jar", "Dominion Wand",
-      "Glyph of Amplify", "Mana Condenser", "Enchanter's Sword"
-    }
-  },
-  {
-    name = "Apothic Enchanting Pack",
-    color = colors.magenta,
-    price = 1750,
-    description = "Advanced enchanting and potion brewing.",
-    tags = {"magic"},
-    items = {
-      "Apotheosis Enchanting Table", "Hell Shelf", "Infused Hell Shelf",
-      "Gem Dust", "Potion Charm", "Eternal Stella"
-    }
-  },
-  {
-    name = "All The Modium Set Pack",
-    color = colors.yellow,
-    price = 3500,
-    description = "Allthemodium tools and armor for the brave.",
-    tags = {"utility"},
-    items = {
-      "Allthemodium Pickaxe", "Allthemodium Sword", "Allthemodium Helmet",
-      "Allthemodium Chestplate", "Allthemodium Leggings", "Allthemodium Boots"
-    }
-  },
-  {
-    name = "Vibranium Set Pack",
-    color = colors.green,
-    price = 5000,
-    description = "The ultimate Vibranium gear set.",
-    tags = {"utility"},
-    items = {
-      "Vibranium Pickaxe", "Vibranium Sword", "Vibranium Helmet",
-      "Vibranium Chestplate", "Vibranium Leggings", "Vibranium Boots"
-    }
-  }
-}
-
--- === Tag Filtering ===
-local allTags = {"all", "utility", "magic"}
-local tagColors = {all=colors.lightGray, utility=colors.orange, magic=colors.purple}
-local tagNames = {all="All", utility="Utility", magic="Magic"}
-local filterIndex = 1
-
-local function getActiveTag()
-  return allTags[filterIndex]
-end
-
-local function nextTag()
-  filterIndex = filterIndex % #allTags + 1
-end
-
--- Fix: When tag is "all", show all packs, not just utility packs
-local function packHasTag(pack, tag)
-  if tag == "all" then return true end
-  for _, t in ipairs(pack.tags or {}) do
-    if t == tag then return true end
-  end
-  return false
-end
-
-local function getFilteredPacks()
-  local tag = getActiveTag()
-  local filtered = {}
-  for _, pack in ipairs(packs) do
-    if packHasTag(pack, tag) then
-      table.insert(filtered, pack)
-    end
-  end
-  return filtered
-end
-
--- === UI Helpers ===
-local function getSize() return monitor.getSize() end
-
-local function drawBox(x1, y1, x2, y2, color)
-  monitor.setBackgroundColor(color)
-  for y = y1, y2 do
-    monitor.setCursorPos(x1, y)
-    monitor.write(string.rep(" ", x2 - x1 + 1))
-  end
-end
-
-local function drawBorder(x1, y1, x2, y2, color)
-  monitor.setTextColor(color)
-  for x = x1, x2 do
-    monitor.setCursorPos(x, y1)
-    monitor.write("-")
-    monitor.setCursorPos(x, y2)
-    monitor.write("-")
-  end
-  for y = y1, y2 do
-    monitor.setCursorPos(x1, y)
-    monitor.write("|")
-    monitor.setCursorPos(x2, y)
-    monitor.write("|")
-  end
-  monitor.setCursorPos(x1, y1)
-  monitor.write("+")
-  monitor.setCursorPos(x2, y1)
-  monitor.write("+")
-  monitor.setCursorPos(x1, y2)
-  monitor.write("+")
-  monitor.setCursorPos(x2, y2)
-  monitor.write("+")
-end
-
-local function drawCenteredText(y, text, color, bg)
-  local w = getSize()
+local function drawCenter(y, text, color, bg)
+  local w = select(1, monitor.getSize())
   local x = math.floor((w - #text) / 2) + 1
   monitor.setCursorPos(x, y)
-  if color then monitor.setTextColor(color) end
-  if bg then monitor.setBackgroundColor(bg) end
+  monitor.setBackgroundColor(bg or colors.black)
+  monitor.setTextColor(color or colors.white)
+  monitor.clearLine()
   monitor.write(text)
 end
 
-local function wrapText(text, width)
-  local lines = {}
-  for line in text:gmatch("[^\n]+") do
-    while #line > width do
-      local cut = width
-      while cut > 1 and line:sub(cut,cut) ~= " " do cut = cut - 1 end
-      if cut == 1 then cut = width end
-      table.insert(lines, line:sub(1, cut))
-      line = line:sub(cut+1)
-    end
-    table.insert(lines, line)
+local function drawBorder()
+  local w, h = monitor.getSize()
+  monitor.setTextColor(colors.gray)
+  for i = 1, w do
+    monitor.setCursorPos(i, 1)
+    monitor.write("-")
+    monitor.setCursorPos(i, h)
+    monitor.write("-")
   end
-  return lines
-end
-
--- === SciFi Decals & UFOs ===
-local function drawUFO(x, y)
-  -- Simple UFO ASCII art (3 lines)
-  --   _===_
-  --  ( o o )
-  --   '---'
-  monitor.setTextColor(colors.lightBlue)
-  monitor.setCursorPos(x, y)
-  monitor.write(" _===_ ")
-  monitor.setCursorPos(x, y+1)
-  monitor.write("( o o )")
-  monitor.setCursorPos(x, y+2)
-  monitor.write(" '---' ")
-end
-
-local function drawAlien(x, y)
-  -- Cute alien face
-  --  .-''-.
-  -- ( o o )
-  --  | ^ |
-  monitor.setTextColor(colors.lime)
-  monitor.setCursorPos(x, y)
-  monitor.write(".-''-.")
-  monitor.setCursorPos(x, y+1)
-  monitor.write("(o o)")
-  monitor.setCursorPos(x, y+2)
-  monitor.write(" |^| ")
-end
-
-local function drawStars(w, y)
-  -- Sprinkle some stars across the line
-  monitor.setTextColor(colors.white)
-  for i = 1, w, 7 do
-    monitor.setCursorPos(i, y)
-    monitor.write("*")
-  end
-  for i = 4, w, 13 do
-    monitor.setCursorPos(i, y)
-    monitor.write(".")
+  for i = 1, h do
+    monitor.setCursorPos(1, i)
+    monitor.write("|")
+    monitor.setCursorPos(w, i)
+    monitor.write("|")
   end
 end
 
--- === Main UI Drawing ===
-local scroll = 0
-local packsPerPage = 5
-
-local function drawHeader()
-  local w, _ = getSize()
-  drawBox(1, 1, w, 3, colors.gray)
-  drawBorder(1, 1, w, 3, colors.white)
-  -- Draw UFO and Alien decals
-  drawUFO(3, 1)
-  drawAlien(w-10, 1)
-  -- Draw cosmic stars
-  drawStars(w, 1)
-  drawStars(w, 3)
-  -- SciFi shop name
-  drawCenteredText(2, "LongiMart UFO Emporium", colors.white, colors.gray)
-  -- Draw filter button (below header, right-aligned)
-  local tag = getActiveTag()
-  local tagLabel = "["..tagNames[tag].."]"
-  local tagColor = tagColors[tag] or colors.lightGray
-  local btnW = #tagLabel + 2
-  local btnY1 = 4
-  local btnY2 = 5
-  drawBox(w-btnW, btnY1, w-1, btnY2, tagColor)
-  drawBorder(w-btnW, btnY1, w-1, btnY2, colors.white)
-  monitor.setTextColor(colors.white)
-  monitor.setBackgroundColor(tagColor)
-  monitor.setCursorPos(w-btnW+1, btnY1+1)
-  monitor.write(tagLabel)
-end
-
-local function drawFooter()
-  local w, h = getSize()
-  drawBox(1, h-1, w, h, colors.gray)
-  drawBorder(1, h-1, w, h, colors.white)
-  -- Draw cosmic stars (removed <UFO> from bottom left)
-  drawStars(w, h-1)
-  -- monitor.setTextColor(colors.lightBlue)
-  -- monitor.setCursorPos(2, h-1)
-  -- monitor.write("<UFO>")
-  drawCenteredText(h, "Touch a pack for details | Scroll Up/Down | Filter", colors.white, colors.gray)
-end
-
--- Draws the tags for a pack at (x, y)
-local function drawPackTags(pack, x, y)
-  local tagStrs = {}
-  for _, tag in ipairs(pack.tags or {}) do
-    table.insert(tagStrs, tagNames[tag] or tag)
-  end
-  if #tagStrs > 0 then
-    monitor.setTextColor(colors.lightGray)
-    monitor.setCursorPos(x, y)
-    monitor.write("["..table.concat(tagStrs, ", ").."]")
-  end
-end
-
--- Draws the list of packs, with tags on a separate line below the name to avoid overlap
-local function drawPackList(filteredPacks)
-  local w, h = getSize()
-  local startY = 6 -- was 5, now 6 to make room for filter button
-  local boxH = 4   -- Increased from 3 to 4 to fit tags on their own line
-  local gap = 1
-  local visible = math.min(packsPerPage, #filteredPacks)
-  for i = 1, visible do
-    local packIdx = i + scroll
-    local pack = filteredPacks[packIdx]
-    if not pack then break end
-    local y1 = startY + (i-1)*(boxH+gap)
-    local y2 = y1 + boxH - 1
-    drawBox(3, y1, w-2, y2, pack.color)
-    drawBorder(3, y1, w-2, y2, colors.white)
-    monitor.setTextColor(colors.black)
-    monitor.setBackgroundColor(pack.color)
-    monitor.setCursorPos(5, y1)
-    -- Add a little UFO or alien decal at the start of each pack name
-    if i % 2 == 1 then
-      monitor.write("👽 " .. pack.name)
-    else
-      monitor.write("🛸 " .. pack.name)
-    end
-    -- Draw tags on their own line, below the name
-    drawPackTags(pack, 5, y1+1)
-    -- Description and price move down by one line
-    monitor.setCursorPos(5, y1+2)
-    monitor.setTextColor(colors.white)
-    monitor.write(pack.description:sub(1, w-10))
-    monitor.setCursorPos(5, y1+3)
-    monitor.setTextColor(colors.yellow)
-    monitor.write(string.format("%d Bacon Bits", pack.price))
-  end
-  -- Scroll indicators
-  if scroll > 0 then
-    drawCenteredText(startY-1, "Scroll Up", colors.lightGray, colors.black)
-  end
-  if (scroll + packsPerPage) < #filteredPacks then
-    drawCenteredText(h-2, "Scroll Down", colors.lightGray, colors.black)
-  end
-end
-
-local function getPackAtCoords(filteredPacks, x, y)
-  local w, h = getSize()
-  local startY = 6 -- was 5, now 6 to match drawPackList
-  local boxH = 4   -- Increased from 3 to 4 to match drawPackList
-  local gap = 1
-  for i = 1, packsPerPage do
-    local packIdx = i + scroll
-    local pack = filteredPacks[packIdx]
-    if not pack then break end
-    local y1 = startY + (i-1)*(boxH+gap)
-    local y2 = y1 + boxH - 1
-    if y >= y1 and y <= y2 and x >= 3 and x <= w-2 then
-      return pack
-    end
-  end
-  return nil
-end
-
-local function isFilterButton(x, y)
-  local w, _ = getSize()
-  local tag = getActiveTag()
-  local tagLabel = "["..tagNames[tag].."]"
-  local btnW = #tagLabel + 2
-  local btnY1 = 4
-  local btnY2 = 5
-  return x >= w-btnW and x <= w-1 and y >= btnY1 and y <= btnY2
-end
-
-local function drawPackDetail(pack)
+local function drawPackMenu(wallet)
+  local w, h = monitor.getSize()
+  monitor.setBackgroundColor(colors.black)
   monitor.clear()
-  drawHeader()
-  drawFooter()
-  local w, h = getSize()
-  -- Use as much vertical space as possible for the detail box
-  local boxW = w-6
-  local boxH = h-7
-  local x1 = 4
-  local y1 = 6 -- was 5, now 6 to match new layout
-  local x2 = x1 + boxW - 1
-  local y2 = y1 + boxH - 1
-  drawBox(x1, y1, x2, y2, colors.gray)
-  drawBorder(x1, y1, x2, y2, colors.white)
-  -- Draw a UFO above the pack name
-  drawUFO(x1+2, y1)
-  monitor.setTextColor(colors.lime)
-  monitor.setCursorPos(x1+12, y1+1)
-  monitor.write(pack.name .. " - " .. pack.price .. " BB")
-  drawPackTags(pack, x1+12, y1+2)
-  monitor.setTextColor(colors.lightGray)
-  local descLines = wrapText(pack.description, boxW-4)
-  for i, line in ipairs(descLines) do
-    monitor.setCursorPos(x1+2, y1+4+i-1)
-    monitor.write(line)
-  end
-  monitor.setTextColor(colors.yellow)
-  monitor.setCursorPos(x1+2, y1+5+#descLines)
-  monitor.write("Includes:")
-  -- Show as many items as fit, with scrolling if needed
-  local maxItems = y2 - (y1+6+#descLines)
-  for i, item in ipairs(pack.items) do
-    if i > maxItems then break end
-    monitor.setCursorPos(x1+4, y1+5+#descLines+i)
-    -- Add a star or alien emoji for scifi cuteness
-    if i % 2 == 1 then
-      monitor.write("★ " .. item)
-    else
-      monitor.write("👽 " .. item)
-    end
-  end
+  drawBorder()
 
-  -- Buy button and Back button
-  local buyBtnW = 10
-  local buyBtnX1 = x1+2
-  local buyBtnX2 = buyBtnX1+buyBtnW-1
-  local buyBtnY = y2-2
-  local backBtnW = 10
-  local backBtnX1 = x2-backBtnW+1
-  local backBtnX2 = x2
-  local backBtnY = y2-1
+  drawCenter(2, "========== LongiMart Terminal ==========" , colors.yellow)
+  drawCenter(3, " Select a Pack to View Details ", colors.lime)
+  drawCenter(5, "Wallet Balance: " .. wallet.balance .. " BB", colors.cyan)
 
-  -- Draw Buy button (with UFO)
-  drawBox(buyBtnX1, buyBtnY, buyBtnX2, buyBtnY, colors.green)
-  monitor.setTextColor(colors.white)
-  monitor.setCursorPos(buyBtnX1+1, buyBtnY)
-  monitor.write("🛸 Buy ")
+  local y = 7
+  for i, pack in ipairs(packs) do
+    local packLabel = "[" .. i .. "] " .. pack.name
+    local priceLabel = "Price: " .. pack.price .. " BB"
 
-  -- Draw Back button (with alien)
-  drawBox(backBtnX1, backBtnY, backBtnX2, backBtnY, colors.blue)
-  monitor.setTextColor(colors.white)
-  monitor.setCursorPos(backBtnX1+1, backBtnY)
-  monitor.write("👽 Back ")
+    monitor.setCursorPos(4, y)
+    monitor.setBackgroundColor(colors.gray)
+    monitor.setTextColor(colors.black)
+    monitor.clearLine()
+    monitor.write(packLabel)
 
-  -- Message area
-  local msgY = y2-4
-  local function showMessage(msg, color)
-    drawBox(x1+2, msgY, x2-2, msgY, colors.gray)
-    monitor.setTextColor(color or colors.white)
-    monitor.setCursorPos(x1+3, msgY)
-    monitor.write(msg)
-  end
+    -- Position the price at a safe distance from the end
+    monitor.setCursorPos(w - #priceLabel - 3, y)
+    monitor.write(priceLabel)
 
-  -- Wait for touch
-  while true do
-    local event, side, tx, ty = os.pullEvent("monitor_touch")
-    -- Buy button
-    if tx >= buyBtnX1 and tx <= buyBtnX2 and ty == buyBtnY then
-      local wallet, err = readWallet()
-      if not wallet then
-        showMessage("Error: "..(err or "No disk!"), colors.red)
-      elseif wallet.balance < pack.price then
-        showMessage("Insufficient funds!", colors.red)
-      else
-        local walletBefore = {balance = wallet.balance, id = wallet.id}
-        writeWallet(wallet.balance - pack.price, wallet.id)
-        logPurchase(pack.name, pack.price)
-        local walletAfter = readWallet() or {balance = "?", id = wallet.id}
-        showMessage("Purchase successful! 👾", colors.lime)
-        -- Print receipt
-        printReceipt(pack, walletBefore, walletAfter)
-      end
-    -- Back button
-    elseif tx >= backBtnX1 and tx <= backBtnX2 and ty == backBtnY then
-      break
-    end
+    y = y + 2
   end
 end
 
--- === Main Loop ===
+local function drawPackDetail(idx, wallet)
+  local w, h = monitor.getSize()
+  local pack = packs[idx]
+  monitor.clear()
+  drawBorder()
+
+  drawCenter(2, "--- Pack Details ---", colors.yellow)
+  drawCenter(3, pack.name, colors.orange)
+
+  monitor.setTextColor(colors.white)
+  local y = 5
+  for i, item in ipairs(pack.items) do
+    monitor.setCursorPos(4, y)
+    monitor.write("- " .. item)
+    y = y + 1
+  end
+
+  drawCenter(h - 4, "Price: " .. pack.price .. " BB", colors.green)
+  drawCenter(h - 3, "Wallet: " .. wallet.balance .. " BB", colors.cyan)
+  drawCenter(h - 1, "Right-click to Confirm Purchase", colors.lime)
+  drawCenter(h, "Or click above to Cancel", colors.gray)
+end
+
 local function main()
   while true do
-    monitor.setBackgroundColor(colors.black)
-    monitor.clear()
-    drawHeader()
-    drawFooter()
-    local filteredPacks = getFilteredPacks()
-    if scroll > math.max(0, #filteredPacks - packsPerPage) then
-      scroll = math.max(0, #filteredPacks - packsPerPage)
-    end
-    drawPackList(filteredPacks)
-    local event, side, x, y = os.pullEvent("monitor_touch")
-    local w, h = getSize()
-    -- Filter button
-    if isFilterButton(x, y) then
-      nextTag()
-      scroll = 0
-    -- Scroll up
-    elseif scroll > 0 and y == 5 then -- was 4, now 5 to match new layout
-      scroll = scroll - 1
-    -- Scroll down
-    elseif (scroll + packsPerPage) < #filteredPacks and y == h-2 then
-      scroll = scroll + 1
+    local wallet = readWallet()
+    if not wallet then
+      monitor.setBackgroundColor(colors.black)
+      monitor.clear()
+      drawCenter(5, "Insert Wallet Disk to Begin", colors.red)
+      sleep(1)
     else
-      local pack = getPackAtCoords(filteredPacks, x, y)
-      if pack then
-        drawPackDetail(pack)
+      drawPackMenu(wallet)
+      local _, _, x, y = os.pullEvent("monitor_touch")
+      local selection = math.floor((y - 7) / 2) + 1
+      if packs[selection] then
+        drawPackDetail(selection, wallet)
+        local _, _, _, confirmY = os.pullEvent("monitor_touch")
+        if confirmY == select(2, monitor.getSize()) then
+          if wallet.balance >= packs[selection].price then
+            wallet.balance = wallet.balance - packs[selection].price
+            writeWallet(wallet.balance, wallet.id)
+            monitor.clear()
+            drawCenter(5, "Purchase Complete!", colors.green)
+            sleep(2)
+          else
+            drawCenter(5, "Insufficient Balance!", colors.red)
+            sleep(2)
+          end
+        end
       end
     end
   end
