@@ -1,0 +1,234 @@
+--[[
+Idle RPG Expanded Version (with Dungeon Events, Potions, and Perks)
+Fully Integrated Script for CC: Tweaked (4x4 Monitor, Disk, Speaker)
+--]]
+
+local monitor = peripheral.find("monitor")
+local drive = peripheral.find("drive")
+local speaker = peripheral.find("speaker")
+local SAVE_FILE = "player.sav"
+local XOR_KEY = 113
+
+monitor.setTextScale(0.5)
+local monW, monH = monitor.getSize()
+
+local player = {
+  level = 1, xp = 0, hp = 100, maxHp = 100,
+  armor = nil, inventory = {},
+  perks = {Bravery = 0, Wisdom = 0, Fortitude = 0},
+  perkPoints = 0, totalClears = 0
+}
+
+local adventureAreas = {
+  {name="Forest of Beginnings", level=1},
+  {name="Blazing Crater", level=5},
+  {name="Sunken Caves", level=8},
+  {name="Cursed Catacombs", level=12},
+  {name="Skyreach Peaks", level=18}
+}
+
+local lootPools = {
+  ["Forest of Beginnings"] = {"Wooden Shield", "Nature Tonic"},
+  ["Blazing Crater"] = {"Ember Plate", "Magma Blade"},
+  ["Sunken Caves"] = {"Pearl Helm", "Bubble Potion"},
+  ["Cursed Catacombs"] = {"Ghoul Cloak", "Hex Blade"},
+  ["Skyreach Peaks"] = {"Wind Boots", "Falcon Bow"}
+}
+
+local dungeonEvents = {
+  ["Blazing Crater"] = function()
+    local roll = math.random(1,3)
+    if roll == 1 then return "Lava tides burn you!", function() player.hp = player.hp - 10 end
+    elseif roll == 2 then return "A Fire Spirit grants you 15 XP", function() player.xp = player.xp + 15 end
+    else return "A volcanic blast! You dodge it.", function() end end
+  end,
+  ["Sunken Caves"] = function()
+    local roll = math.random(1,3)
+    if roll == 1 then return "Oxygen running low! -5 HP", function() player.hp = player.hp - 5 end
+    elseif roll == 2 then return "You discover a pearl! +25 XP", function() player.xp = player.xp + 25 end
+    else return "Tunnel crumbles, you retreat.", function() end end
+  end,
+  ["Cursed Catacombs"] = function()
+    local roll = math.random(1,3)
+    if roll == 1 then return "Ghost trap! -10 HP", function() player.hp = player.hp - 10 end
+    elseif roll == 2 then return "You break a curse! +20 XP", function() player.xp = player.xp + 20 end
+    else return "A skull stares... nothing happens.", function() end end
+  end
+}
+
+local function xor(str)
+  local out = {}
+  for i = 1, #str do
+    out[i] = string.char(bit.bxor(str:byte(i), XOR_KEY))
+  end
+  return table.concat(out)
+end
+
+local function center(y, text)
+  local x = math.max(1, math.floor((monW - #text) / 2))
+  monitor.setCursorPos(x, y)
+  monitor.write(text)
+end
+
+local function sound(n)
+  if speaker then speaker.playNote("bit", 1, n) end
+end
+
+local function saveGame()
+  if not drive or not drive.isDiskPresent() then return false end
+  local path = drive.getMountPath() .. "/" .. SAVE_FILE
+  local f = fs.open(path, "w")
+  f.write(xor(textutils.serialize(player)))
+  f.close()
+  return true
+end
+
+local function loadGame()
+  if not drive or not drive.isDiskPresent() then return false end
+  local path = drive.getMountPath() .. "/" .. SAVE_FILE
+  if not fs.exists(path) then return false end
+  local f = fs.open(path, "r")
+  local data = xor(f.readAll())
+  f.close()
+  local ok, t = pcall(textutils.unserialize, data)
+  if ok and type(t) == "table" then player = t return true end
+end
+
+local function simulateAdventure(index)
+  local area = adventureAreas[index]
+  monitor.clear()
+  center(2, "== "..area.name.." ==")
+
+  local function checkAvoid()
+    return player.armor and player.armor.name == "Cloak of Echoes" and math.random() < 0.10
+  end
+
+  local eventText, effect = dungeonEvents[area.name] and dungeonEvents[area.name]() or {"Quiet journey.", function() end}
+  if not checkAvoid() then effect() else center(5, "Cloak of Echoes! Damage avoided.") end
+  center(4, eventText)
+  sleep(1)
+
+  if math.random() < (0.3 + 0.05 * player.perks.Bravery) then
+    local pool = lootPools[area.name] or {"Basic Armor"}
+    local name = pool[math.random(1, #pool)]
+    table.insert(player.inventory, {name=name, type="armor"})
+    center(6, "Loot Found: "..name)
+    sound(4)
+  end
+
+  local xpGain = math.floor(15 * (1 + 0.10 * player.perks.Wisdom))
+  player.xp = player.xp + xpGain
+  center(7, "+"..xpGain.." XP")
+
+  if player.xp >= player.level * 20 then
+    player.xp = 0
+    player.level = player.level + 1
+    player.perkPoints = player.perkPoints + 1
+    player.maxHp = 100 + 10 * player.perks.Fortitude
+    center(8, "Level Up! +1 Perk Point")
+    sound(6)
+  end
+
+  player.totalClears = player.totalClears + 1
+  sleep(2)
+end
+
+local function drawPerks()
+  monitor.clear()
+  center(2, "== PERKS ==")
+  center(4, "Bravery:   +"..(player.perks.Bravery*5).."% loot")
+  center(5, "Wisdom:    +"..(player.perks.Wisdom*10).."% XP")
+  center(6, "Fortitude: +"..(player.perks.Fortitude*10).." MaxHP")
+  center(8, "Points Available: "..player.perkPoints)
+  center(monH, "[Click to assign] [Back]")
+end
+
+local function drawInventory()
+  monitor.clear()
+  center(2, "== INVENTORY ==")
+  for i, item in ipairs(player.inventory) do
+    local label = item.name..(player.armor == item and " *Equipped" or "")
+    center(3+i, "["..i.."] "..label)
+  end
+  center(monH, "Click to equip/use | Back")
+end
+
+local function drawStats()
+  monitor.clear()
+  center(2, "== STATS ==")
+  center(4, "Level: "..player.level)
+  center(5, "XP: "..player.xp)
+  center(6, "HP: "..player.hp.."/"..player.maxHp)
+  center(7, "Equipped: "..(player.armor and player.armor.name or "None"))
+  center(monH, "[Back]")
+end
+
+local function drawAdventures()
+  monitor.clear()
+  center(2, "== SELECT DUNGEON ==")
+  for i, a in ipairs(adventureAreas) do
+    local txt = player.level >= a.level and ("["..i.."] "..a.name) or ("["..i.."] Locked (Lv "..a.level..")")
+    center(3+i, txt)
+  end
+  center(monH, "[Back]")
+end
+
+local function drawMenu()
+  monitor.clear()
+  center(2, "== IDLE RPG ==")
+  center(4, "[1] Start Adventure")
+  center(5, "[2] Stats")
+  center(6, "[3] Inventory")
+  center(7, "[4] Save")
+  center(8, "[5] Load")
+  center(9, "[6] Perks")
+  center(10, "[7] Exit")
+end
+
+local state = "menu"
+while true do
+  if state == "menu" then drawMenu()
+  elseif state == "stats" then drawStats()
+  elseif state == "inv" then drawInventory()
+  elseif state == "adv" then drawAdventures()
+  elseif state == "perks" then drawPerks() end
+
+  local _, _, x, y = os.pullEvent("monitor_touch")
+  sound(2)
+
+  if state == "menu" then
+    if y == 4 then state = "adv"
+    elseif y == 5 then state = "stats"
+    elseif y == 6 then state = "inv"
+    elseif y == 7 then saveGame()
+    elseif y == 8 then loadGame()
+    elseif y == 9 then state = "perks"
+    elseif y == 10 then os.shutdown() end
+  elseif state == "stats" or state == "perks" or state == "inv" or state == "adv" then
+    if state == "inv" and y > 3 and y < monH then
+      local index = y - 3
+      local item = player.inventory[index]
+      if item then
+        if item.type == "potion" then
+          player.hp = math.min(player.maxHp, player.hp + 30)
+          table.remove(player.inventory, index)
+        elseif item.type == "armor" then
+          player.armor = item
+        end
+      end
+    elseif state == "perks" and player.perkPoints > 0 then
+      local p = {4, 5, 6}
+      for i,v in ipairs({"Bravery", "Wisdom", "Fortitude"}) do
+        if y == p[i] then player.perks[v] = player.perks[v] + 1 player.perkPoints = player.perkPoints - 1 end
+      end
+    elseif state == "adv" and y > 3 and y < monH then
+      local idx = y - 3
+      if adventureAreas[idx] and player.level >= adventureAreas[idx].level then
+        simulateAdventure(idx)
+        state = "menu"
+      end
+    else
+      state = "menu"
+    end
+  end
+end
