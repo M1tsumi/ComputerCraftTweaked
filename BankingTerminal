@@ -1,23 +1,14 @@
--- LongiMart Banking Terminal
-local monitor = peripheral.find("monitor")
-local drive = peripheral.find("drive")
-if not monitor or not drive then error("Monitor or Drive not found!") end
+-- LongiMart Banking Terminal with Pack Store + Key Generation & Disk Registry
 
--- Set text scale to minimum allowed (0.5)
+local monitor = peripheral.find("monitor")
+local sideDisplay = peripheral.find("monitor", function(name, obj) return name ~= peripheral.getName(monitor) end)
+local drive = peripheral.find("drive")
+if not monitor or not drive or not sideDisplay then error("Monitor, Side Display, or Drive not found!") end
+
 monitor.setTextScale(0.5)
+sideDisplay.setTextScale(0.5)
 local key = 97
 
--- Pastel purple palette (ComputerCraft 1.80+)
-local pastelPurples = {
-  colors.purple,
-}
-
--- Helper to get a pastel purple (cycle by line or section)
-local function getPastelPurple(idx)
-  return pastelPurples[1]
-end
-
--- Encryption functions
 local function xor(str)
   local out = {}
   for i = 1, #str do
@@ -26,226 +17,340 @@ local function xor(str)
   return table.concat(out)
 end
 
--- Reads wallet balance and ID from disk
+local function parseDiskLabel()
+  local label = drive.getDiskLabel()
+  if not label then return "Unknown", 0 end
+  local name, id = label:match("^(.-)%s*%-%s*(%d+)$")
+  return name or "Unknown", tonumber(id) or 0
+end
+
 local function readWallet()
   if not drive.isDiskPresent() then return nil end
-  if not fs.exists("disk/wallet.dat") then
-    return {balance = 0, id = 0}
-  end
+  if not fs.exists("disk/wallet.dat") then return {balance=0, id=0} end
   local f = fs.open("disk/wallet.dat", "r")
   local data = xor(f.readAll())
   f.close()
   local parts = {}
-  for value in string.gmatch(data, "[^|]+") do
-    table.insert(parts, value)
-  end
-  local balance = tonumber(parts[1]) or 0
-  local id = tonumber(parts[2]) or 0
-  return {balance = balance, id = id}
+  for value in string.gmatch(data, "[^|]+") do table.insert(parts, value) end
+  return {balance=tonumber(parts[1]), id=tonumber(parts[2])}
 end
 
--- Writes wallet balance and ID to disk
 local function writeWallet(balance, id)
   local f = fs.open("disk/wallet.dat", "w")
-  local raw = tostring(balance) .. "|" .. tostring(id)
-  f.write(xor(raw))
+  f.write(xor(tostring(balance) .. "|" .. tostring(id)))
   f.close()
 end
 
--- Reads all purchase log entries for the current card
-local function readAllPurchases()
-  if not drive.isDiskPresent() or not fs.exists("disk/purchase.log") then
-    return {}
-  end
+local function updateRegistry(name, id, sessionBalance)
+  local path = "/active_disks.log"
   local lines = {}
-  local f = fs.open("disk/purchase.log", "r")
-  while true do
-    local line = f.readLine()
-    if not line then break end
-    table.insert(lines, line)
+  if fs.exists(path) then
+    local f = fs.open(path, "r")
+    while true do
+      local line = f.readLine()
+      if not line then break end
+      table.insert(lines, line)
+    end
+    f.close()
   end
+
+  local updated = false
+  for i, line in ipairs(lines) do
+    local label, last, allTime = line:match("^(.-)%s*|%s*Last:%s*(%d+)%s*|%s*Total:%s*(%d+)$")
+    if label == (name .. " - " .. id) then
+      last, allTime = tonumber(last), tonumber(allTime)
+      lines[i] = label .. " | Last: " .. sessionBalance .. " | Total: " .. (allTime + sessionBalance)
+      updated = true
+      break
+    end
+  end
+
+  if not updated then
+    table.insert(lines, name .. " - " .. id .. " | Last: " .. sessionBalance .. " | Total: " .. sessionBalance)
+  end
+
+  local f = fs.open(path, "w")
+  for _, line in ipairs(lines) do f.writeLine(line) end
   f.close()
+end
+
+local function wrapText(text, width)
+  local words = {}
+  for word in text:gmatch("[^%s]+") do table.insert(words, word) end
+  local lines = {}
+  local current = ""
+  for _, word in ipairs(words) do
+    if #current + #word + 1 <= width then
+      current = current .. (current == "" and "" or " ") .. word
+    else
+      table.insert(lines, current)
+      current = word
+    end
+  end
+  if current ~= "" then table.insert(lines, current) end
   return lines
 end
 
--- Draws a neon green UFO at the top of the monitor
-local function drawUFO()
-  local w, _ = monitor.getSize()
-  -- Improved UFO ASCII art for better appearance
-  local ufo = {
-    "        ___        ",
-    "     .-'   '-.     ",
-    "   .'         '.   ",
-    "  /  O     O    \\  ",
-    " |               | ",
-    " |   .-'''''-.   | ",
-    "  \\_/         \\_/  ",
-    "     '-.___,-'     ",
-    "      /     \\      ",
-    "     /_/ \\_\\     ",
-  }
-  local startY = 1
-  for i, line in ipairs(ufo) do
-    local x = math.floor((w - #line) / 2) + 1
-    monitor.setCursorPos(x, startY + i - 1)
-    monitor.setBackgroundColor(getPastelPurple(i))
-    monitor.setTextColor(colors.lime)
-    monitor.write(line)
+local function drawSideDisplay()
+  sideDisplay.setBackgroundColor(colors.black)
+  sideDisplay.clear()
+  local w, h = sideDisplay.getSize()
+  drawCenterSide(1, "Active Disks", colors.yellow)
+  if not fs.exists("/active_disks.log") then return end
+  local f = fs.open("/active_disks.log", "r")
+  local i = 1
+  while true do
+    local line = f.readLine()
+    if not line then break end
+    local wrapped = wrapText(line, w)
+    for _, segment in ipairs(wrapped) do
+      if i < h then
+        sideDisplay.setCursorPos(1, i + 1)
+        sideDisplay.setTextColor(colors.white)
+        sideDisplay.write(segment)
+        i = i + 1
+      end
+    end
   end
+  f.close()
 end
 
--- Centered draw utility with neon green default
-local function drawCenter(line, text, color, bg)
-  local w, _ = monitor.getSize()
-  local x = math.floor((w - #text) / 2) + 1
-  monitor.setCursorPos(x, line)
-  -- Use a solid background for text for readability
-  monitor.setBackgroundColor(bg or colors.black)
-  monitor.setTextColor(color or colors.lime)
+function drawCenterMain(y, text, color)
+  local w = select(1, monitor.getSize())
+  local x = math.floor((w - #text) / 2)
+  monitor.setCursorPos(x, y)
+  monitor.setTextColor(color or colors.white)
+  monitor.setBackgroundColor(colors.black)
   monitor.clearLine()
   monitor.write(text)
 end
 
--- Button draw utility with neon effect
-local function drawButton(x, y, label, color, width)
-  width = width or #label
-  monitor.setCursorPos(x, y)
-  monitor.setBackgroundColor(colors.green)
-  monitor.setTextColor(color or colors.black)
-  monitor.write(label)
-  -- Neon border effect
-  monitor.setCursorPos(x-1, y)
-  monitor.setTextColor(colors.lime)
-  monitor.write(">")
-  monitor.setCursorPos(x+width, y)
-  monitor.write("<")
+function drawCenterSide(y, text, color)
+  local w = select(1, sideDisplay.getSize())
+  local x = math.floor((w - #text) / 2)
+  sideDisplay.setCursorPos(x, y)
+  sideDisplay.setTextColor(color or colors.white)
+  sideDisplay.setBackgroundColor(colors.black)
+  sideDisplay.write(text)
 end
 
--- Draws the transaction log in a small section, with scrolling support
-local function drawTransactionLog(logLines, scroll, maxLines, w, yStart)
-  -- Use smaller text: setTextScale(0.5) for log, restore after
-  local prevScale = monitor.getTextScale()
-  monitor.setTextScale(0.5)
-  for i = 1, maxLines do
-    local idx = scroll + i
-    local line = logLines[idx]
-    monitor.setCursorPos(2, yStart + i - 1)
-    monitor.setBackgroundColor(getPastelPurple(yStart + i - 1))
-    monitor.setTextColor(colors.white)
-    monitor.clearLine()
-    if line then
-      -- Truncate if too long
-      if #line > w-2 then
-        line = line:sub(1, w-5) .. "..."
+local function drawBalanceOptions(balance, name, id)
+  local amounts = {1000, 2000, 3000, 4000, 5000}
+  monitor.setBackgroundColor(colors.black)
+  monitor.clear()
+
+  drawCenterMain(2, "Create Key for: " .. name .. " - " .. id, colors.lime)
+  drawCenterMain(4, "Balance: " .. balance .. " BB", colors.cyan)
+
+  for i, amt in ipairs(amounts) do
+    local y = 5 + i
+    drawCenterMain(y, "[+ " .. amt .. " BB]", colors.green)
+  end
+end
+
+local function main()
+  while true do
+    if not drive.isDiskPresent() then
+      monitor.clear()
+      drawCenterMain(5, "Insert Disk to Begin", colors.red)
+      sleep(1)
+    else
+      local name, id = parseDiskLabel()
+      local wallet = readWallet()
+      local balance = wallet and wallet.balance or 0
+      drawBalanceOptions(balance, name, id)
+
+      local _, _, _, y = os.pullEvent("monitor_touch")
+      local idx = y - 5
+      local amounts = {1000, 2000, 3000, 4000, 5000}
+
+      if amounts[idx] then
+        balance = balance + amounts[idx]
+        writeWallet(balance, id)
+        updateRegistry(name, id, amounts[idx])
+        drawBalanceOptions(balance, name, id)
+        drawSideDisplay()
+        sleep(0.5)
       end
-      monitor.write(line)
     end
   end
-  monitor.setTextScale(prevScale)
 end
 
--- Main loop
-local function main()
-  local w, h = monitor.getSize()
-  local logScroll = 0
-  while true do
-    local wallet = readWallet()
-    local allPurchases = readAllPurchases()
+main()
+-- LongiMart Banking Terminal with Pack Store + Key Generation & Disk Registry
 
-    -- Set a nice pastel purple background
-    monitor.setBackgroundColor(colors.purple)
-    monitor.clear()
+local monitor = peripheral.find("monitor")
+local sideDisplay = peripheral.find("monitor", function(name, obj) return name ~= peripheral.getName(monitor) end)
+local drive = peripheral.find("drive")
+if not monitor or not drive or not sideDisplay then error("Monitor, Side Display, or Drive not found!") end
 
-    -- Draw UFO and neon title
-    drawUFO()
-    drawCenter(7, "LongiMart Banking", colors.lime)
-    drawCenter(8, "Account Terminal", colors.green)
+monitor.setTextScale(0.5)
+sideDisplay.setTextScale(0.5)
+local key = 97
 
-    if not wallet then
-      drawCenter(10, "Insert Disk to Begin", colors.red)
-      drawCenter(12, "Awaiting Disk...", colors.lime)
+local function xor(str)
+  local out = {}
+  for i = 1, #str do
+    table.insert(out, string.char(bit.bxor(str:byte(i), key)))
+  end
+  return table.concat(out)
+end
+
+local function parseDiskLabel()
+  local label = drive.getDiskLabel()
+  if not label then return "Unknown", 0 end
+  local name, id = label:match("^(.-)%s*%-%s*(%d+)$")
+  return name or "Unknown", tonumber(id) or 0
+end
+
+local function readWallet()
+  if not drive.isDiskPresent() then return nil end
+  if not fs.exists("disk/wallet.dat") then return {balance=0, id=0} end
+  local f = fs.open("disk/wallet.dat", "r")
+  local data = xor(f.readAll())
+  f.close()
+  local parts = {}
+  for value in string.gmatch(data, "[^|]+") do table.insert(parts, value) end
+  return {balance=tonumber(parts[1]), id=tonumber(parts[2])}
+end
+
+local function writeWallet(balance, id)
+  local f = fs.open("disk/wallet.dat", "w")
+  f.write(xor(tostring(balance) .. "|" .. tostring(id)))
+  f.close()
+end
+
+local function updateRegistry(name, id, sessionBalance)
+  local path = "/active_disks.log"
+  local lines = {}
+  if fs.exists(path) then
+    local f = fs.open(path, "r")
+    while true do
+      local line = f.readLine()
+      if not line then break end
+      table.insert(lines, line)
+    end
+    f.close()
+  end
+
+  local updated = false
+  for i, line in ipairs(lines) do
+    local label, last, allTime = line:match("^(.-)%s*|%s*Last:%s*(%d+)%s*|%s*Total:%s*(%d+)$")
+    if label == (name .. " - " .. id) then
+      last, allTime = tonumber(last), tonumber(allTime)
+      lines[i] = label .. " | Last: " .. sessionBalance .. " | Total: " .. (allTime + sessionBalance)
+      updated = true
+      break
+    end
+  end
+
+  if not updated then
+    table.insert(lines, name .. " - " .. id .. " | Last: " .. sessionBalance .. " | Total: " .. sessionBalance)
+  end
+
+  local f = fs.open(path, "w")
+  for _, line in ipairs(lines) do f.writeLine(line) end
+  f.close()
+end
+
+local function wrapText(text, width)
+  local words = {}
+  for word in text:gmatch("[^%s]+") do table.insert(words, word) end
+  local lines = {}
+  local current = ""
+  for _, word in ipairs(words) do
+    if #current + #word + 1 <= width then
+      current = current .. (current == "" and "" or " ") .. word
     else
-      -- Neon balance and ID, centered
-      drawCenter(10, ("[Balance: " .. wallet.balance .. " BB]"), colors.lime)
-      drawCenter(11, ("[ID: " .. wallet.id .. "]"), colors.cyan)
+      table.insert(lines, current)
+      current = word
+    end
+  end
+  if current ~= "" then table.insert(lines, current) end
+  return lines
+end
 
-      -- Add buttons (row 13)
-      local addLabels = {"+1", "+5", "+10", "+50", "+100", "+1K"}
-      local addValues = {1, 5, 10, 50, 100, 1000}
-      local btnW = 4
-      local gap = 1
-      local totalBtnW = #addLabels * btnW + (#addLabels - 1) * gap
-      local startX = math.floor((w - totalBtnW) / 2) + 1
-      for i, label in ipairs(addLabels) do
-        drawButton(startX + (i-1)*(btnW+gap), 13, label, colors.black, btnW)
+local function drawSideDisplay()
+  sideDisplay.setBackgroundColor(colors.black)
+  sideDisplay.clear()
+  local w, h = sideDisplay.getSize()
+  drawCenterSide(1, "Active Disks", colors.yellow)
+  if not fs.exists("/active_disks.log") then return end
+  local f = fs.open("/active_disks.log", "r")
+  local i = 1
+  while true do
+    local line = f.readLine()
+    if not line then break end
+    local wrapped = wrapText(line, w)
+    for _, segment in ipairs(wrapped) do
+      if i < h then
+        sideDisplay.setCursorPos(1, i + 1)
+        sideDisplay.setTextColor(colors.white)
+        sideDisplay.write(segment)
+        i = i + 1
       end
-      drawCenter(12, "NEON CREDIT", colors.lime)
+    end
+  end
+  f.close()
+end
 
-      -- Subtract buttons (row 15)
-      local subLabels = {"-1", "-5", "-10", "-50", "-100", "-1K"}
-      local subValues = {1, 5, 10, 50, 100, 1000}
-      for i, label in ipairs(subLabels) do
-        drawButton(startX + (i-1)*(btnW+gap), 15, label, colors.black, btnW)
+function drawCenterMain(y, text, color)
+  local w = select(1, monitor.getSize())
+  local x = math.floor((w - #text) / 2)
+  monitor.setCursorPos(x, y)
+  monitor.setTextColor(color or colors.white)
+  monitor.setBackgroundColor(colors.black)
+  monitor.clearLine()
+  monitor.write(text)
+end
+
+function drawCenterSide(y, text, color)
+  local w = select(1, sideDisplay.getSize())
+  local x = math.floor((w - #text) / 2)
+  sideDisplay.setCursorPos(x, y)
+  sideDisplay.setTextColor(color or colors.white)
+  sideDisplay.setBackgroundColor(colors.black)
+  sideDisplay.write(text)
+end
+
+local function drawBalanceOptions(balance, name, id)
+  local amounts = {1000, 2000, 3000, 4000, 5000}
+  monitor.setBackgroundColor(colors.black)
+  monitor.clear()
+
+  drawCenterMain(2, "Create Key for: " .. name .. " - " .. id, colors.lime)
+  drawCenterMain(4, "Balance: " .. balance .. " BB", colors.cyan)
+
+  for i, amt in ipairs(amounts) do
+    local y = 5 + i
+    drawCenterMain(y, "[+ " .. amt .. " BB]", colors.green)
+  end
+end
+
+local function main()
+  while true do
+    if not drive.isDiskPresent() then
+      monitor.clear()
+      drawCenterMain(5, "Insert Disk to Begin", colors.red)
+      sleep(1)
+    else
+      local name, id = parseDiskLabel()
+      local wallet = readWallet()
+      local balance = wallet and wallet.balance or 0
+      drawBalanceOptions(balance, name, id)
+
+      local _, _, _, y = os.pullEvent("monitor_touch")
+      local idx = y - 5
+      local amounts = {1000, 2000, 3000, 4000, 5000}
+
+      if amounts[idx] then
+        balance = balance + amounts[idx]
+        writeWallet(balance, id)
+        updateRegistry(name, id, amounts[idx])
+        drawBalanceOptions(balance, name, id)
+        drawSideDisplay()
+        sleep(0.5)
       end
-      drawCenter(14, "NEON DEBIT", colors.green)
-
-      -- ID control buttons (row 17)
-      local idBtnW = 7
-      local idStartX = math.floor((w - (idBtnW*2 + gap)) / 2) + 1
-      drawButton(idStartX, 17, "ID +1", colors.lime, idBtnW)
-      drawButton(idStartX + idBtnW + gap, 17, "ID -1", colors.lime, idBtnW)
-      drawCenter(16, "ID CONTROL", colors.lime)
-
-      -- Transaction log (rows 19-24, 6 lines, small text, scrollable)
-      local logYStart = 19
-      local logLines = allPurchases
-      local maxLogLines = 6
-      local logW = w
-      drawCenter(logYStart-1, "Transaction Log (Scroll: ^ v)", colors.green)
-      drawTransactionLog(logLines, logScroll, maxLogLines, logW, logYStart)
-
-      -- Wait for touch and handle
-      local _, _, x, y = os.pullEvent("monitor_touch")
-      local b, id = wallet.balance, wallet.id
-
-      -- Add BB
-      if y == 13 then
-        for i = 1, #addLabels do
-          local bx = startX + (i-1)*(btnW+gap)
-          if x >= bx and x < bx+btnW then
-            b = b + addValues[i]
-            break
-          end
-        end
-      -- Subtract BB
-      elseif y == 15 then
-        for i = 1, #subLabels do
-          local bx = startX + (i-1)*(btnW+gap)
-          if x >= bx and x < bx+btnW then
-            b = math.max(0, b - subValues[i])
-            break
-          end
-        end
-      -- ID Control
-      elseif y == 17 then
-        if x >= idStartX and x < idStartX + idBtnW then
-          id = id + 1
-        elseif x >= idStartX + idBtnW + gap and x < idStartX + idBtnW*2 + gap then
-          id = math.max(0, id - 1)
-        end
-      -- Transaction log scroll up
-      elseif y == logYStart-1 and x <= 3 then
-        if logScroll > 0 then
-          logScroll = logScroll - 1
-        end
-      -- Transaction log scroll down
-      elseif y == logYStart-1 and x >= w-2 then
-        if #logLines > maxLogLines and logScroll < #logLines - maxLogLines then
-          logScroll = logScroll + 1
-        end
-      end
-
-      writeWallet(b, id)
     end
   end
 end
