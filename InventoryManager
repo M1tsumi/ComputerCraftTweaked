@@ -1,0 +1,583 @@
+-- Check if essential global tables are available.
+-- In a standard CC: Tweaked environment, these should always be present.
+if colors == nil then
+    error("The 'colors' global table is not available. This script requires ComputerCraft/CC: Tweaked environment.")
+end
+if peripheral == nil then
+    error("The 'peripheral' global table is not available. This script requires ComputerCraft/CC: Tweaked environment.")
+end
+if os == nil then
+    error("The 'os' global table is not available. This script requires ComputerCraft/CC: Tweaked environment.")
+end
+if textutils == nil then
+    error("The 'textutils' global table is not available. This script requires ComputerCraft/CC: Tweaked environment.")
+end
+if parallel == nil then
+    error("The 'parallel' global table is not available. This script requires ComputerCraft/CC: Tweaked environment.")
+end
+
+-- Find the connected monitor peripheral.
+local monitor = peripheral.find("monitor")
+if not monitor then
+    error("No monitor peripheral found! Please ensure a monitor is connected and powered.")
+end
+
+-- Initialize global variables for the terminal state.
+local backpacks = {}
+local vanillaChest = nil
+local itemMap = {}
+local selectedItem = nil
+local currentPage = 1
+local itemsPerPage = 20
+local searchFilter = ""
+local sortBy = "name"
+local displayMode = "grid"
+local transferButtonMap = {} -- Initialize this globally
+
+-- Forward declarations for mutually recursive functions or functions called before their full definition.
+local function displayStatusMessage(...) end
+local function showItemDetails(...) end
+local function attemptTransfer(...) end
+
+
+-- Define the color theme for the terminal.
+local theme = {
+    background = colors.black,
+    header = colors.blue,
+    text = colors.white,
+    accent = colors.lightBlue,
+    selected = colors.yellow,
+    border = colors.gray,
+    success = colors.green,
+    error = colors.red,
+    white = colors.white -- Explicitly set white
+}
+
+-- Set the text scale for the monitor and get its dimensions.
+monitor.setTextScale(0.5)
+local width, height = monitor.getSize()
+
+-- Discover all connected sophisticated backpacks and the vanilla chest.
+print("Scanning for peripherals...")
+for _, name in ipairs(peripheral.getNames()) do
+    local pType = peripheral.getType(name)
+    print("Found peripheral: " .. name .. " (Type: " .. tostring(pType) .. ")")
+    if pType == "sophisticatedbackpacks:backpack" then
+        table.insert(backpacks, peripheral.wrap(name))
+    elseif pType == "minecraft:chest" then
+        vanillaChest = peripheral.wrap(name)
+        print("Vanilla chest found and wrapped: " .. name)
+    end
+end
+print("Peripheral scan complete.")
+
+-- Terminate if no backpacks are found.
+if #backpacks == 0 then
+    error("No sophisticated backpacks found! Ensure backpacks are connected and named correctly.")
+end
+
+-- Warn if no vanilla chest is found.
+if not vanillaChest then
+    print("Warning: No vanilla chest peripheral found. Item transfer to chest will not be available.")
+end
+
+-- Utility function to center text on the monitor.
+local function centerText(text, y, color)
+    color = color or theme.text
+    monitor.setTextColor(color)
+    monitor.setCursorPos(math.floor((width - #text) / 2) + 1, y)
+    monitor.write(text)
+end
+
+-- Draws the border around the monitor display.
+local function drawBorder()
+    monitor.setBackgroundColor(theme.border)
+    monitor.setTextColor(theme.text)
+
+    -- Top border
+    monitor.setCursorPos(1, 1)
+    monitor.write(string.rep("-", width))
+
+    -- Bottom border
+    monitor.setCursorPos(1, height)
+    monitor.write(string.rep("-", width))
+
+    -- Side borders
+    for i = 2, height - 1 do
+        monitor.setCursorPos(1, i)
+        monitor.write("|")
+        monitor.setCursorPos(width, i)
+        monitor.write("|")
+    end
+end
+
+-- Draws the header section of the terminal.
+local function drawHeader()
+    monitor.setBackgroundColor(theme.header)
+    monitor.setTextColor(theme.white)
+
+    -- Clear the header area.
+    for i = 2, 4 do
+        monitor.setCursorPos(2, i)
+        monitor.write(string.rep(" ", width - 2))
+    end
+
+    -- Display the main title.
+    centerText("Quefep's Inventory Manager", 2, theme.white)
+
+    -- Display the count of found backpacks.
+    monitor.setCursorPos(3, 3)
+    monitor.write("Backpacks: " .. #backpacks)
+
+    -- Display current page information.
+    monitor.setCursorPos(width - 15, 3)
+    monitor.write("Page " .. currentPage)
+
+    -- Display the active filter, if any.
+    if searchFilter ~= "" then
+        monitor.setCursorPos(3, 4)
+        monitor.write("Filter: " .. searchFilter)
+    end
+end
+
+-- Collects all items from all connected backpacks.
+local function collectItems()
+    local allItems = {}
+    local index = 1
+
+    for b = 1, #backpacks do
+        local items = backpacks[b].list()
+        for slot, item in pairs(items) do
+            local name = item.displayName or item.name or "Unknown Item"
+
+            -- Apply the search filter if one is active.
+            if searchFilter == "" or string.lower(name):find(string.lower(searchFilter)) then
+                allItems[index] = {
+                    backpack = backpacks[b],
+                    slot = slot,
+                    item = item,
+                    name = name,
+                    index = index
+                }
+                index = index + 1
+            end
+        end
+    end
+
+    -- Sort the collected items.
+    if sortBy == "name" then
+        table.sort(allItems, function(a, b) return a.name < b.name end)
+    elseif sortBy == "count" then
+        table.sort(allItems, function(a, b) return a.item.count > b.item.count end)
+    elseif sortBy == "type" then
+        table.sort(allItems, function(a, b) return a.item.name < b.item.name end)
+    end
+
+    return allItems
+end
+
+-- Draws the main inventory display.
+local function drawInventory()
+    monitor.setBackgroundColor(theme.background)
+    monitor.clear()
+
+    drawBorder()
+    drawHeader()
+
+    local allItems = collectItems()
+    local totalItems = #allItems
+    local totalPages = math.max(1, math.ceil(totalItems / itemsPerPage))
+
+    -- Adjust the current page if it's out of bounds.
+    if currentPage > totalPages then
+        currentPage = totalPages
+    end
+    if currentPage < 1 then
+        currentPage = 1
+    end
+
+    -- Calculate the start and end indices for items on the current page.
+    local startIndex = (currentPage - 1) * itemsPerPage + 1
+    local endIndex = math.min(startIndex + itemsPerPage - 1, totalItems)
+
+    itemMap = {}
+    local y = 6
+
+    -- Display items for the current page.
+    for i = startIndex, endIndex do
+        if y >= height - 2 then break end
+
+        local data = allItems[i]
+        local item = data.item
+        local name = data.name
+
+        -- Truncate long item names.
+        if #name > width - 20 then
+            name = string.sub(name, 1, width - 23) .. "..."
+        end
+
+        monitor.setBackgroundColor(theme.background)
+        monitor.setTextColor(theme.text)
+        monitor.setCursorPos(3, y)
+
+        -- Format and display the item information.
+        local displayText = string.format("[%2d] %-" .. (width - 15) .. "s x%d",
+            i, name, item.count)
+        monitor.write(displayText)
+
+        -- Store item data for touch handling.
+        itemMap[i] = {
+            backpack = data.backpack,
+            slot = data.slot,
+            item = item,
+            y = y,
+            name = name
+        }
+
+        y = y + 1
+    end
+
+    -- Draw the footer with controls.
+    monitor.setBackgroundColor(theme.border)
+    monitor.setTextColor(theme.text)
+    monitor.setCursorPos(2, height - 1)
+    monitor.write("Controls: [R]efresh [S]ort [F]ilter [<] [>] Pages")
+
+    -- Display page information.
+    monitor.setCursorPos(width - 15, height - 1)
+    monitor.write(string.format("Page %d/%d", currentPage, totalPages))
+end
+
+-- Function to display temporary status messages.
+function displayStatusMessage(message, color, refreshFunction)
+    local messageY = height - 3
+
+    monitor.setBackgroundColor(theme.background)
+    monitor.setCursorPos(3, messageY)
+    monitor.write(string.rep(" ", width - 6))
+
+    monitor.setTextColor(color)
+    monitor.setCursorPos(3, messageY)
+    monitor.write(message)
+
+    -- Use a timer instead of sleep to avoid blocking
+    local timer = os.startTimer(1.5)
+    os.pullEvent("timer")
+
+    -- Clear the message line
+    monitor.setBackgroundColor(theme.background)
+    monitor.setCursorPos(3, messageY)
+    monitor.write(string.rep(" ", width - 6))
+
+    -- Refresh the screen
+    if refreshFunction then
+        refreshFunction()
+    else
+        drawInventory()
+    end
+end
+
+-- Fixed function to attempt transferring an item.
+function attemptTransfer(itemData, quantity)
+    if not vanillaChest then
+        displayStatusMessage("Error: No chest found for transfer!", theme.error, function() showItemDetails(itemData) end)
+        return
+    end
+
+    local backpack = itemData.backpack
+    local slot = itemData.slot
+    local item = itemData.item
+
+    -- Ensure we don't try to transfer more than available
+    local transferAmount = math.min(quantity, item.count)
+
+    if transferAmount <= 0 then
+        displayStatusMessage("No items to transfer or invalid quantity.", theme.error, function() showItemDetails(itemData) end)
+        return
+    end
+
+    -- Get the chest's peripheral name
+    local chestName = nil
+    for _, name in ipairs(peripheral.getNames()) do
+        if peripheral.getType(name) == "minecraft:chest" then
+            chestName = name
+            break
+        end
+    end
+
+    if not chestName then
+        displayStatusMessage("Error: Cannot find chest peripheral name!", theme.error, function() showItemDetails(itemData) end)
+        return
+    end
+
+    print("Debug: Attempting transfer of " .. transferAmount .. " items from slot " .. slot .. " to chest " .. chestName)
+
+    -- Attempt to push items from the backpack to the vanilla chest
+    -- Using the correct pushItems syntax: pushItems(destinationName, fromSlot, count, toSlot)
+    local success, result = pcall(function()
+        return backpack.pushItems(chestName, slot, transferAmount)
+    end)
+
+    if success then
+        if result and result > 0 then
+            displayStatusMessage(string.format("Transferred %d x %s!", result, item.displayName or item.name), theme.success, function()
+                -- Update the item count in our local data
+                itemData.item.count = itemData.item.count - result
+                if itemData.item.count <= 0 then
+                    selectedItem = nil
+                    drawInventory()
+                else
+                    showItemDetails(itemData)
+                end
+            end)
+        else
+            displayStatusMessage("Transfer failed: No items moved (chest full?)", theme.error, function() showItemDetails(itemData) end)
+        end
+    else
+        displayStatusMessage("Transfer error: " .. tostring(result), theme.error, function() showItemDetails(itemData) end)
+    end
+end
+
+-- Enhanced item details display
+function showItemDetails(itemData)
+    monitor.setBackgroundColor(theme.background)
+    monitor.clear()
+
+    drawBorder()
+
+    -- Header for the item details view.
+    monitor.setBackgroundColor(theme.header)
+    monitor.setTextColor(theme.white)
+    for i = 2, 4 do
+        monitor.setCursorPos(2, i)
+        monitor.write(string.rep(" ", width - 2))
+    end
+    centerText("Item Details", 2)
+    centerText("Right-click or ESC to return", 3)
+
+    local item = itemData.item
+    local y = 6
+
+    monitor.setBackgroundColor(theme.background)
+    monitor.setTextColor(theme.text)
+
+    -- Display basic item information.
+    monitor.setCursorPos(3, y)
+    monitor.write("Name: " .. (item.displayName or item.name or "Unknown"))
+    y = y + 1
+
+    monitor.setCursorPos(3, y)
+    monitor.write("Count: " .. item.count)
+    y = y + 1
+
+    monitor.setCursorPos(3, y)
+    monitor.write("Internal ID: " .. (item.name or "Unknown"))
+    y = y + 2
+
+    -- Display NBT information if available.
+    if item.nbt then
+        local success, nbt = pcall(textutils.unserializeJSON, item.nbt)
+        if success and type(nbt) == "table" then
+            monitor.setTextColor(theme.accent)
+            monitor.setCursorPos(3, y)
+            monitor.write("NBT Data:")
+            y = y + 1
+
+            monitor.setTextColor(theme.text)
+
+            -- Durability information
+            if nbt.Damage and nbt.maxDamage then
+                local durability = nbt.maxDamage - nbt.Damage
+                local durabilityPercent = math.floor((durability / nbt.maxDamage) * 100)
+                monitor.setCursorPos(3, y)
+                monitor.write(string.format("Durability: %d/%d (%d%%)",
+                    durability, nbt.maxDamage, durabilityPercent))
+                y = y + 1
+            elseif nbt.Damage then
+                monitor.setCursorPos(3, y)
+                monitor.write("Damage: " .. nbt.Damage)
+                y = y + 1
+            end
+
+            -- Enchantments
+            if nbt.Enchantments or nbt.ench then
+                local enchList = nbt.Enchantments or nbt.ench
+                monitor.setTextColor(theme.accent)
+                monitor.setCursorPos(3, y)
+                monitor.write("Enchantments:")
+                y = y + 1
+
+                monitor.setTextColor(theme.text)
+                for _, ench in ipairs(enchList) do
+                    if y >= height - 6 then break end -- Leave room for transfer buttons
+                    local enchName = ench.id or "unknown"
+                    local level = ench.lvl or ench.Lvl or "?"
+                    enchName = enchName:match(":(.+)$") or enchName
+                    monitor.setCursorPos(5, y)
+                    monitor.write("- " .. enchName .. " " .. level)
+                    y = y + 1
+                end
+            end
+
+            -- Lore
+            if nbt.display and nbt.display.Lore then
+                monitor.setTextColor(theme.accent)
+                monitor.setCursorPos(3, y)
+                monitor.write("Lore:")
+                y = y + 1
+
+                monitor.setTextColor(theme.text)
+                for _, lore in ipairs(nbt.display.Lore) do
+                    if y >= height - 6 then break end -- Leave room for transfer buttons
+                    monitor.setCursorPos(5, y)
+                    monitor.write("- " .. lore)
+                    y = y + 1
+                end
+            end
+        else
+            monitor.setTextColor(theme.error)
+            monitor.setCursorPos(3, y)
+            monitor.write("NBT parsing failed.")
+        end
+    else
+        monitor.setTextColor(theme.accent)
+        monitor.setCursorPos(3, y)
+        monitor.write("No NBT Data.")
+    end
+
+    -- Display transfer options if a vanilla chest is found
+    if vanillaChest and item.count > 0 then
+        y = height - 4 -- Position transfer buttons near the bottom
+        monitor.setTextColor(theme.accent)
+        monitor.setCursorPos(3, y)
+        monitor.write("Transfer to Chest:")
+        y = y + 1
+
+        local transferQuantities = {1, 2, 16, 32, 64, item.count} -- Add "All" option
+        local xPos = 3
+        transferButtonMap = {} -- Reset the button map
+
+        for _, qty in ipairs(transferQuantities) do
+            if item.count >= qty then
+                local buttonText
+                if qty == item.count then
+                    buttonText = "[ALL]"
+                else
+                    buttonText = string.format("[%dx]", qty)
+                end
+
+                monitor.setBackgroundColor(theme.accent)
+                monitor.setTextColor(theme.white)
+                monitor.setCursorPos(xPos, y)
+                monitor.write(buttonText)
+
+                -- Store button region for touch handling
+                table.insert(transferButtonMap, {
+                    x1 = xPos,
+                    y1 = y,
+                    x2 = xPos + #buttonText - 1,
+                    y2 = y,
+                    quantity = qty
+                })
+                xPos = xPos + #buttonText + 2
+
+                -- Wrap to next line if needed
+                if xPos > width - 10 then
+                    xPos = 3
+                    y = y + 1
+                end
+            end
+        end
+        monitor.setBackgroundColor(theme.background)
+    end
+end
+
+-- Handles keyboard input for navigation and actions.
+local function handleKeyboard()
+    while true do
+        local event, key = os.pullEvent("key")
+
+        if selectedItem then
+            if key == keys.escape then
+                selectedItem = nil
+                drawInventory()
+            end
+        else
+            if key == keys.r then
+                drawInventory()
+            elseif key == keys.s then
+                if sortBy == "name" then
+                    sortBy = "count"
+                elseif sortBy == "count" then
+                    sortBy = "type"
+                else
+                    sortBy = "name"
+                end
+                drawInventory()
+            elseif key == keys.comma then
+                if currentPage > 1 then
+                    currentPage = currentPage - 1
+                    drawInventory()
+                end
+            elseif key == keys.period then
+                local allItems = collectItems()
+                local totalPages = math.max(1, math.ceil(#allItems / itemsPerPage))
+                if currentPage < totalPages then
+                    currentPage = currentPage + 1
+                    drawInventory()
+                end
+            elseif key == keys.f then
+                if searchFilter == "" then
+                    searchFilter = "stone"
+                else
+                    searchFilter = ""
+                end
+                currentPage = 1
+                drawInventory()
+            end
+        end
+    end
+end
+
+-- Handles monitor touch events and mouse clicks.
+local function handleTouchAndMouse()
+    while true do
+        local event, side, x, y, button = os.pullEvent("monitor_touch")
+
+        if selectedItem then
+            -- Check if the touch was on a transfer button
+            local touchedButton = false
+            for _, btn in ipairs(transferButtonMap) do
+                if x >= btn.x1 and x <= btn.x2 and y >= btn.y1 and y <= btn.y2 then
+                    attemptTransfer(selectedItem, btn.quantity)
+                    touchedButton = true
+                    break
+                end
+            end
+
+            -- If not on a transfer button, exit details view
+            if not touchedButton then
+                selectedItem = nil
+                drawInventory()
+            end
+        else
+            -- In the main inventory view, select an item
+            for index, data in pairs(itemMap) do
+                if y == data.y then
+                    selectedItem = data
+                    showItemDetails(data)
+                    break
+                end
+            end
+        end
+    end
+end
+
+-- Main function to initialize and run the program.
+local function run()
+    drawInventory()
+    parallel.waitForAny(handleKeyboard, handleTouchAndMouse)
+end
+
+-- Start the program.
+run()
